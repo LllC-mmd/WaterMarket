@@ -106,7 +106,7 @@ class WaterMarket(Model):
             if self.market == 'discriminatory-price':
                 self.schedule.learn_d(self.p_matrix)
             if self.schedule.time % 10 == 1:
-                p_new = copy.copy(self.p_matrix)  # deep copy: allocation a new address
+                p_new = copy.deepcopy(self.p_matrix)  # deep copy: allocation a new address
                 p_delta = p_new - self.p_old
                 if np.sum(np.abs(p_delta)) < 10**(-8):
                     self.running = False
