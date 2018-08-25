@@ -9,7 +9,7 @@ class WaterUser(Agent):
 
     def __init__(self, unique_id, model,
                  x, u_a, u_b, u_c, w, L,
-                 out_link, in_link,
+                 out_link, in_link, out_min, penalty,
                  transaction_size, res,
                  beta, mu):
         super().__init__(unique_id, model)
@@ -17,11 +17,11 @@ class WaterUser(Agent):
         self.u_a = u_a
         self.u_b = u_b
         self.u_c = u_c
-        self.u = u_a*self.x*self.x + u_b*self.x + u_c  # benefit brought by the use of water
         self.permit = w  # water permit of user
         self.store = L  # local water available
         self.out_link = out_link  # the unique_id of users who have waterways in the downstream of the user
         self.in_link = in_link
+        self.out_min = out_min  # the minimum outflow on each out_link
         self.role_choose()
         self.res = res  # parameter for reservation price, represents marginal profit of the water
         self.transaction_size = transaction_size
@@ -44,16 +44,35 @@ class WaterUser(Agent):
                 # re-calculate the water table
                 self.water_table()
 
-    def control(self, f):  # decide the outflow
-        i = 0
-        for user in self.out_link:
-            self.model.f_matrix[self.unique_id][user] = f[i]
-            i += 1
-
     def water_table(self):
         self.outflow = self.model.f_matrix[self.unique_id]  # array of outflow, including the flow from i to i
         self.inflow = self.model.f_matrix.transpose()[self.unique_id]
         self.limit = np.sum(self.inflow) - np.sum(self.outflow) + self.store + self.precipitation  # water use limit
+
+    def control(self, f):  # decide the outflow based on the minimum flow constraints
+        self.water_table()
+        n = self.out_link.shape[0]  # the number of out_links
+        if n == 0:
+            pass
+        else:
+            outflow_sum = np.sum(self.inflow) + self.store - self.x
+            if outflow_sum < 0:
+                self.x = np.sum(self.inflow) + self.store
+            else:
+                min_sum = np.sum(self.out_min)
+                if min_sum > 0:
+                    self.outflow = outflow_sum*self.out_min/min_sum
+
+    def benefit_table(self):
+        # utility brought by the use of water
+        self.u = self.u_a * self.x ** 2 + self.u_b * self.x + self.u_c
+        # transaction income/cost (here, we all use 'income', which is negative for buyers)
+        # Note: a_matrix[i][j] is positive if i is the buyer and j is the seller
+        self.income = -np.sum(self.model.p_matrix[self.unique_id]*self.model.a_matrix[self.unique_id])
+        self.income = self.income-np.sum(self.model.p_matrix[self.unique_id]*np.abs(self.model.a_matrix[self.unique_id]))
+        # penalty caused by the violation of minimum outflow
+        self.penalty = min(0, np.sum(self.out_min-self.outflow))
+        self.benefit = self.u + self.income + self.penalty
 
     def role_choose(self):
         x = self.x
@@ -88,7 +107,7 @@ class WaterUser(Agent):
             self.mu = self.mu - self.beta * (tau - self.bid_price) / self.reservation_price
         else:
             self.mu = self.mu + self.beta * (tau - self.bid_price) / self.reservation_price
-        # how to learn the water use and outflow ???
+        self.control()  # update the outflow
 
     def learn_by_random(self):
         ratio = np.random.uniform(0.5, 1, 1)
