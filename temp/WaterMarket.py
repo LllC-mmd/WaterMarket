@@ -41,13 +41,13 @@ def flow_update(market):
 
 
 def label_get(market, label):
-    list = [user.unique_id for user in market.users if user.label == label]
-    return list
+    l_list = [user.unique_id for user in market.users if user.label == label]
+    return l_list
 
 
 class WaterMarket(Model):
 
-    def __init__(self, basin_matrix, precipitation, u, water_permit, res, beta, mu, market):
+    def __init__(self, basin_matrix, precipitation, out_min, penalty, u, water_permit, res, beta, mu, market):
         # basin_matrix is a adjacent matrix (np.array) of a directed graph for a waterway
         # e.g. for a Y-shape river system, the basin_matrix is
         # [[0, 1, 0, 0],
@@ -60,7 +60,7 @@ class WaterMarket(Model):
         self.basin_matrix = basin_matrix
 
         sample_size = np.random.randint(self.user_amount, size=self.user_amount)
-        x_initial = [-u_i[0]/(2*u_i[1]) for u_i in u]
+        x_initial = [-u_i[1]/(2*u_i[0]) for u_i in u]
         # f_matrix[i][j] is the flow from agent i to agent j
         self.f_matrix = np.diag(precipitation)
 
@@ -69,7 +69,7 @@ class WaterMarket(Model):
                                    u_a=u[i][0], u_b=u[i][1], u_c=u[i][2], x=x_initial[i],
                                    w=water_permit[i], L=basin_matrix[i][i],
                                    out_link=np.nonzero(basin_matrix[i])[0], in_link=np.nonzero(basin_matrix.transpose()[i])[0],
-                                   res=res[i],
+                                   out_min=out_min[i], penalty=penalty[i], res=res[i],
                                    transaction_size=sample_size[i], beta=beta[i], mu=mu[i])
             self.schedule.add(water_user)
 
@@ -87,19 +87,7 @@ class WaterMarket(Model):
         # a_matrix[i][j] = 0 if no transaction happens
         self.a_matrix = np.zeros((self.user_amount, self.user_amount))
 
-        for i in range(0, self.user_amount):
-            n = np.sum(basin_matrix[i])  # the number of out_links
-            if n == 0:
-                pass
-            else:
-                outflow_sum = np.sum(self.f_matrix.transpose()[i]) + self.users[i].store - x_initial[i]
-                if outflow_sum < 0:
-                    self.users[i].x = np.sum(self.f_matrix.transpose()[i]) + self.users[i].store
-                else:
-                    avg = outflow_sum / n
-                    for j in np.nonzero(basin_matrix[i])[0]:
-                        self.f_matrix[i][j] = avg
-                        self.f_matrix[j][i] = avg
+        self.schedule.control()
 
         self.role = np.array([user.market_role for user in self.users])
         self.x = [user.x for user in self.users]
@@ -112,8 +100,8 @@ class WaterMarket(Model):
             self.transaction()
             if self.market == 'discriminatory-price':
                 self.schedule.learn_d(self.p_matrix)
-            if self.schedule.time % 10 == 1:
-                p_new = copy.deepcopy(self.p_matrix)  # shallow copy
+            if self.schedule.time % 10 == 9:  # if choose 1, easily stop at time 1
+                p_new = copy.deepcopy(self.p_matrix)  # deep copy
                 p_delta = p_new - self.p_old
                 if np.sum(np.abs(p_delta)) < 10**(-8):
                     self.running = False
@@ -149,25 +137,26 @@ class WaterMarket(Model):
                     buyer_id = b_index[i]  # i is the unique_id of ith buyer
                     j_index = seller_order[j]  # seller_order[j] is the index of jth seller in seller_price/amount
                     seller_id = s_index[j_index]  # j is the unique_id of jth seller
-                    if buyer_price[i] > seller_price[j_index]:  # the jth seller complete its transaction
-                        cost = 0.5*(buyer_price[i]+seller_price[j_index])
+                    if buyer_price[i] > seller_price[j_index]:
+                        price = 0.5*(buyer_price[i]+seller_price[j_index])
+                        amount = min(buyer_amount[i],seller_amount[j_index])
+                        cost = price * amount
+                        # update the p_matrix and a_matrix
                         self.p_matrix[buyer_id][seller_id] = cost
                         self.p_matrix[seller_id][buyer_id] = cost
-                        if buyer_amount[i] >= seller_amount[j_index]:
-                            buyer_amount[i] -= seller_amount[j_index]
-                            seller_amount[j_index] = 0
-                            # self.users[seller].market_role = 'sider'
-                            role_update(self)
-                            j += 1
-                        else:   # the ith buyer complete its transaction
-                            seller_amount[j_index] -= buyer_amount[i]
-                            buyer_amount[i] = 0
-                            # self.users[buyer].market_role = 'sider'
-                            role_update(self)
+                        self.a_matrix[buyer_id][seller_id] = amount
+                        self.p_matrix[seller_id][buyer_id] = -amount
+                        buyer_amount[i] -= amount
+                        seller_amount[j_index] -= amount
+                        # update users' property
+                        self.users[buyer_id].step()
+                        self.users[seller_id].step()
+                        # update market_role
+                        role_update(self)
                     else:  # transaction fail
                         break
             print(self.schedule.time)  # iteration times
-            #print(self.p_matrix)
+            # print(self.p_matrix)
         # if the market is the bilateral negotiation market
         elif self.market == 'bilateral negotiations':
             pass
