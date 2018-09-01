@@ -2,7 +2,7 @@ import numpy as np
 from mesa import Agent
 
 
-w = 0.1  # market_transaction_ratio
+w = 0.05  # market_transaction_ratio
 
 
 class WaterUser(Agent):
@@ -22,6 +22,7 @@ class WaterUser(Agent):
         self.out_link = out_link  # the unique_id of users who have waterways in the downstream of the user
         self.in_link = in_link
         self.out_min = out_min  # the minimum outflow on each out_link
+        self.penalty = penalty
         self.role_choose()
         self.res = res  # parameter for reservation price, represents marginal profit of the water
         self.transaction_size = transaction_size
@@ -31,26 +32,27 @@ class WaterUser(Agent):
 
     def balance(self):
         # water_balance holds true
+        self.water_table()  # calculate the water table to start the computation
+        choice_num = len(self.out_link)
         while self.x > self.limit:
             ratio = np.random.uniform(0.5, 1)
-            # If water use exceeds its net flow_in, water use should be decreased
-            if self.x > np.sum(self.inflow) + self.store + self.precipitation:
+            # If water use exceeds its net flow_in
+            # or there is no out_link, water use should be decreased
+            if self.x > np.sum(self.inflow) + self.store or choice_num == 0:  # self.inflow contains the precipitation
                 self.x = self.x * ratio
             # Else, decrease the outflow to random out_links
             else:
-                choice_num = len(self.out_link)
                 d = np.random.randint(0, choice_num, 1)
                 self.outflow[d - 1] = self.outflow[d - 1] * ratio
                 # re-calculate the water table
                 self.water_table()
 
-    def water_table(self):
+    def water_table(self):  # water table set a constraint for water use x
         self.outflow = self.model.f_matrix[self.unique_id]  # array of outflow, including the flow from i to i
         self.inflow = self.model.f_matrix.transpose()[self.unique_id]
         self.limit = np.sum(self.inflow) - np.sum(self.outflow) + self.store + self.precipitation  # water use limit
 
-    def control(self, f):  # decide the outflow based on the minimum flow constraints
-        self.water_table()
+    def outflow_initialize(self):  # decide the outflow based on the minimum flow constraints
         n = self.out_link.shape[0]  # the number of out_links
         if n == 0:
             pass
@@ -61,7 +63,15 @@ class WaterUser(Agent):
             else:
                 min_sum = np.sum(self.out_min)
                 if min_sum > 0:
-                    self.outflow = outflow_sum*self.out_min/min_sum
+                    for link in self.out_link:
+                        q = self.out_min[link]*outflow_sum/min_sum
+                        self.outflow[link] = q
+                        self.model.f_matrix[self.unique_id][link] = q
+                else:
+                    q_avg = outflow_sum/n
+                    for link in self.out_link:
+                        self.outflow[link] = q_avg
+                        self.model.f_matrix[self.unique_id][link] = q_avg
 
     def benefit_table(self):
         # utility brought by the use of water
@@ -71,8 +81,8 @@ class WaterUser(Agent):
         self.income = -np.sum(self.model.p_matrix[self.unique_id]*self.model.a_matrix[self.unique_id])
         self.income = self.income-np.sum(self.model.p_matrix[self.unique_id]*np.abs(self.model.a_matrix[self.unique_id]))
         # penalty caused by the violation of minimum outflow
-        self.penalty = min(0, np.sum(self.out_min-self.outflow))
-        self.benefit = self.u + self.income + self.penalty
+        self.fine = min(0, np.sum(self.penalty*(self.outflow-self.out_min)))
+        self.benefit = self.u + self.income + self.fine
 
     def role_choose(self):
         x = self.x
@@ -87,12 +97,12 @@ class WaterUser(Agent):
     def buy(self):
         self.bid_amount = self.x - self.permit
         self.reservation_price = self.res / (1+w)
-        self.bid_price = (1 - self.mu) * self.reservation_price
+        self.bid_price = (1 - self.mu) * self.reservation_price  # mu is in (0, 1)
 
     def sell(self):
         self.bid_amount = self.permit - self.x
         self.reservation_price = self.res / (1 - w)
-        self.bid_price = (1 + self.mu) * self.reservation_price
+        self.bid_price = (1 + self.mu) * self.reservation_price  # mu is in (0, infinity)
 
     def label_choose(self):
         if self.limit < self.permit:
@@ -101,16 +111,42 @@ class WaterUser(Agent):
         else:
             self.label = 'normal'
 
-    def learn(self, tau):  # tau is the transaction cost
-        self.x = max(self.x + self.beta * (2 * self.u_a * self.x + self.u_b - (1 + w) * tau), 0)
+    # learn the outflow, water use and outflow
+    def learn(self, tau):  # tau is the transaction cost / target price
+        inflow = np.sum(self.inflow)
+        outflow = np.sum(self.outflow)
+        C = self.store + inflow
+
         if self.market_role == 'buyer':
-            self.mu = self.mu - self.beta * (tau - self.bid_price) / self.reservation_price
+            mu = min(self.mu - self.beta * (tau - self.bid_price) / self.reservation_price, 1)
+            mu = max(mu, 0)
+            self.mu = mu
+            for link in self.out_link:
+                q = max(self.outflow[link] + 2*self.u_a*(C-outflow) + self.u_b - (w+1)*tau, 0)  # low bound is 0
+                q = min(q, C-np.sum(self.outflow)+self.outflow[link])  # upper bound is total inflow - other outflows
+                self.outflow[link] = q
+                self.model.f_matrix[self.unique_id][link] = q
         else:
-            self.mu = self.mu + self.beta * (tau - self.bid_price) / self.reservation_price
-        self.control()  # update the outflow
+            self.mu = max(self.mu + self.beta * (tau - self.bid_price) / self.reservation_price, 0)
+            for link in self.out_link:
+                q = max(self.outflow[link] + 2*self.u_a*(C-outflow) + self.u_b - (w-1)*tau, 0)
+                q = min(q, C - np.sum(self.outflow) + self.outflow[link])
+                self.outflow[link] = q
+                self.model.f_matrix[self.unique_id][link] = q
+
+        self.x = C - np.sum(self.outflow)
+
+    # learn the price
+    def learn_price(self, tau):
+        if self.market_role == 'buyer':
+            mu = min(self.mu - self.beta * (tau - self.bid_price) / self.reservation_price, 1)
+            mu = max(mu, 0)
+            self.mu = mu
+        else:
+            self.mu = max(self.mu + self.beta * (tau - self.bid_price) / self.reservation_price, 0)
 
     def learn_by_random(self):
-        ratio = np.random.uniform(0.5, 1, 1)
+        ratio = np.random.uniform(0.5, 1)
         self.mu = self.mu * ratio
 
     def step(self):
