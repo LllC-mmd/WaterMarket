@@ -6,31 +6,27 @@ class MarketActivation(SimultaneousActivation):
 
     def __init__(self, model):
         super().__init__(model)
-        self.num = len(self.agents)
 
-    def control(self):
-        for i in range(0, self.num):
-            self.agents[i].control()
-            self.model.f_matrix[i] = self.agents[i].outflow
+    def agent_count(self):
+        self.num = len(self.agents)
 
     def benefit(self):
         for i in range(0, self.num):
             self.agents[i].benefit_table()
 
     def learn_d(self, p_matrix):
-        total_cost = np.sum(p_matrix)
-        non_zero = np.nonzero(p_matrix)[0].shape[0]
+        price_sum = np.sum(p_matrix)
+        non_zero = np.nonzero(p_matrix)[0].shape[0]  # get the total number of non-zeros
 
-        if total_cost != 0:
-            average_cost = total_cost / non_zero
+        if non_zero != 0:
+            price_avg = price_sum / non_zero
             for i in range(0, self.num):
                 z = np.array(p_matrix[i])
                 if np.sum(z) > 0:
                     tau = np.min(z[z>0])
-                    self.agents[i].learn(tau)
+                    self.agents[i].learn(tau)  # learn the outflow, water use and outflow to maximize the benefit
                 else:
-                    tau = average_cost
-                    self.agents[i].learn(tau)
-        else:
+                    self.agents[i].learn_price(price_avg)  # only learn the price
+        else:  # No transaction occurs in the market
             for i in range(0, self.num):
                 self.agents[i].learn_by_random()
