@@ -40,17 +40,19 @@ def metropolis_hastings(user):
             x = x_candidate
             mu = mu_candidate
     # do sampling
-    x_candidate = truncnorm.rvs(0, user.limit)
-    if user.market_role == 'buyer':
-        mu_candidate = truncnorm.rvs(0, 1)
-    else:
-        mu_candidate = truncnorm.rvs(0, 10)
-    q_candidate = propensity(x=x_candidate, mu=mu_candidate, sheet=user.sheet, ini=user.p_ini)
-    q_t = propensity(x=x, mu=mu, sheet=user.sheet, ini=user.p_ini)
-    rate = min(1, q_candidate / q_t)
-    u = random.uniform(0, 1)
-    if u < rate:
-        return x_candidate, mu_candidate
+    while True:
+        x_candidate = truncnorm.rvs(0, user.limit)
+        if user.market_role == 'buyer':
+            mu_candidate = truncnorm.rvs(0, 1)
+        else:
+            mu_candidate = truncnorm.rvs(0, 10)
+        q_candidate = propensity(x=x_candidate, mu=mu_candidate, sheet=user.sheet, ini=user.p_ini)
+        q_t = propensity(x=x, mu=mu, sheet=user.sheet, ini=user.p_ini)
+        rate = min(1, q_candidate / q_t)
+        u = random.uniform(0, 1)
+        if u < rate:
+            break
+    return x_candidate, mu_candidate
 
 
 class WaterUser(Agent):
